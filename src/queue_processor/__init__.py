@@ -56,12 +56,13 @@ SOFTWARE.
 '''
 from threading import Lock, Thread, current_thread
 from time import time, sleep
+from datetime import datetime
 from types import FunctionType
 from typing import TypeVar, Callable
 from parameter_verification import verify_params, ParameterError
 from logging_handler import create_logger, INFO, DEBUG
 
-VERSION = (1,0,0)
+VERSION = (1, 1, 0)    # updated 2023-11-09 14:28:24.523769 from : (1,0,0)
 
 # STATUS constants are returned to the finished callback
 STATUS_OK = 'OK'
@@ -69,6 +70,8 @@ STATUS_TIMEOUT = 'TIMEOUT'
 STATUS_EXPIRED = 'EXPIRED'
 STATUS_QUEUE_FULL = 'QUEUE_FULL'
 STATUS_EXCEPTION = 'EXCEPTION'
+
+DELAY_QUEUE_CHECK_INTERVAL = 10
 
 
 class QueueCommandError(Exception):
@@ -83,7 +86,7 @@ class QueueCommandError(Exception):
 
 class QueueCommand:
     """ Represents a queued command, this is an internal object and should not be called directly """
-    def __init__(self, max_age:int, command_func:Callable, kwargs:dict, args:list, delay:int=0, finished_callback=None):
+    def __init__(self, max_age:int, command_func:Callable, kwargs:dict, args:list, delay:int=0, finished_callback=None, run_after=None):
         """ Create an object for the queue, this is an internal object and should not be called directly """
         self.expire_time = time() + max_age
         self.command_func = command_func
@@ -95,15 +98,27 @@ class QueueCommand:
         self.ret_value = None
         self._lock = Lock()
 
+        if isinstance(run_after, float):
+            self.run_after = run_after
+        elif isinstance(run_after, datetime):
+            self.run_after = run_after.timestamp()
+        else:
+            self.run_after = 0.0
+
     def __str__(self) -> str:
         """ return the object as a string """
-        return f"function: {self.command_func.__name__}, timestamp: {round(self.timestamp, 0)}, expire in: {round(self.expire_time - time(), 2)}, " \
+        return f"function: {self.command_func.__name__}, timestamp: {round(self.timestamp, 0)}, expire in: {round(self.expire_time - time(), 2)}, run after: {self.run_after}, " \
             f"expire-time: {self.expire_time}, kwargs: {str(self.kwargs)[0:60]}{'...' if len(str(self.kwargs))> 60 else ''}, args: {str(self.args)[0:60]}{'...' if len(str(self.args))>60 else ''}"
 
     @property
     def expired(self):
         """ Return true if max age reached """
         return False if time() <= self.expire_time else True
+
+    @property
+    def delay_run(self):
+        ''' Return True if the command should be delayed '''
+        return time() < self.run_after
 
     def execute(self):
         ''' Execute the command function and get the return value '''
@@ -186,6 +201,8 @@ class QueueManager:
         self._queue_exec_thread = None # object to hold the currently active thread
         self._logger.info('Queue initialized.')
         self.raise_queue_full = raise_queue_full
+        self._delay_queue_check_interval = DELAY_QUEUE_CHECK_INTERVAL
+        self._delay_queue_monitor_thread = None
 
     def __del__(self):
         self.close()
@@ -215,7 +232,7 @@ class QueueManager:
             return True
         return False
 
-    def add(self, command_func=None, args=None, kwargs=None, delay=None, finished_func=None):
+    def add(self, command_func=None, args=None, kwargs=None, delay=None, finished_func=None, run_after=None):
         """ 
         Add a comand to the queue
 
@@ -232,6 +249,9 @@ class QueueManager:
                 time in ms to wait after the function is called before continuing to another
                 task in the queue. NOTE: finished_func will be executed before the delay.
                 If None, the default provided with the queue will be used. (default None)
+            run_after: datetime|float|None
+                specify a time the command should be run. Can be passed as a datetime value,
+                or a UNIX timestamp float. None means queue for immediate execution.
 
         Raises
         ------
@@ -253,7 +273,8 @@ class QueueManager:
                                                     kwargs=kwargs if kwargs is not None else {},
                                                     args=args if args is not None else [],
                                                     delay=command_delay,
-                                                    finished_callback=finished_func if finished_func is not None else self.callback_func))
+                                                    finished_callback=finished_func if finished_func is not None else self.callback_func,
+                                                    run_after=run_after))
                 if not isinstance(self._queue_exec_thread, Thread) or not self._queue_exec_thread.is_alive():
                     self._queue_exec_thread = Thread(target=self._queue_exec, name=self.name + '_queue_exec', daemon=True)
                     self._queue_exec_thread.start()
@@ -276,6 +297,8 @@ class QueueManager:
 
     def _queue_exec(self):
         """ Starts a background thread to process and send all queued commands """
+        if self.length > 0:
+            self._logger.debug('Exec queue thread starting...')
         while self.length > 0:
             with self._lock:
                 queue_temp = self._queue.pop(0)
@@ -285,7 +308,17 @@ class QueueManager:
                     Thread(target=queue_temp.execute_callback, kwargs={'status': STATUS_EXPIRED}, daemon=True, name=self.name + '_queue_finish_callback').start()
                 except RuntimeError as run_err:
                     self._logger.error('%s: Runtime error attempting to run finished command %s: %s', self.name, queue_temp.callback, run_err)
+                # skip to the next item
                 continue
+
+            # check if the task is set with a delayed execution
+            if queue_temp.delay_run:
+                with self._lock:
+                    # add the task to the end of the queue - NOTE: Don't check the length!  it was already queued, just add it
+                    self._logger.debug('Delaying execution for %s', queue_temp)
+                    self._queue.append(queue_temp)
+                    # skip to the next item
+                    continue
 
             self._logger.debug(f"Executing queue for: {queue_temp}")
             try:
@@ -316,3 +349,43 @@ class QueueManager:
             except RuntimeError as run_err:
                 self._logger.error('Runtime error attempting to run queue command %s with kwargs %s, args %s: %s', queue_temp.command_func, str(queue_temp.kwargs)[0:60],
                                    str(queue_temp.args)[0:60], run_err)
+
+            # check and see if there are any items queued that are not delayed execution. If so, continue on
+            with self._lock:
+                continue_processing = False
+                for queue_item in self._queue:
+                    if not queue_item.delay_run:
+                        continue_processing = True
+                        break
+                if continue_processing:
+                    continue
+
+            # if only delayed items are left, start a delayed processing thread
+            with self._lock:
+                if not isinstance(self._delay_queue_monitor_thread, Thread) or not self._delay_queue_monitor_thread.is_alive():
+                    self._delay_queue_monitor_thread = Thread(target=self._delay_queue_monitor, name=self.name + '_delay_monitor', daemon=True)
+                    self._delay_queue_monitor_thread.start()
+            # end the queue thread, handing off to delay queue monitor
+            self._logger.debug('Exec Queue thread ending.')
+            return
+
+    def _delay_queue_monitor(self):
+        ''' Background thread to monitor the queue for threads with a delayed execution time. If there are tasks ready to run, start the queue thread '''
+        if self.length > 0:
+            self._logger.debug('Delay queue monitor thread starting...')
+        while self.length > 0:
+            # delay before checking
+            sleep(self._delay_queue_check_interval)
+
+            # check for items that are ready to execute
+            start_queue_thread = False
+            with self._lock:
+                if False in [x.delay_run for x in self._queue]:
+                    start_queue_thread = True
+                    if start_queue_thread:
+                        if not isinstance(self._queue_exec_thread, Thread) or not self._queue_exec_thread.is_alive():
+                            self._logger.debug('Waking queue exec thread for delayed tasks...')
+                            self._queue_exec_thread = Thread(target=self._queue_exec, name=self.name + '_queue_exec', daemon=True)
+                            self._queue_exec_thread.start()
+
+        self._logger.debug('Delay queue monitor thread ending.')
