@@ -223,12 +223,12 @@ class QueueManager:
     def length(self):
         """ returns the length of the queue in the queue (includes any currently running tasks) """
         with self._lock:
-            return len(self._queue)
+            return len(self._queue) + (1 if (isinstance(self._queue_exec_thread, Thread) and self._queue_exec_thread.is_alive()) else 0)
 
     @property
     def busy(self):
         """ Returns true if there are any queued commands or commands currently being executed """
-        if (isinstance(self._queue_exec_thread, Thread) and self._queue_exec_thread.is_alive()) or self.length > 0:
+        if (isinstance(self._queue_exec_thread, Thread) and self._queue_exec_thread.is_alive()) or len(self._queue) > 0:
             return True
         return False
 
@@ -264,7 +264,7 @@ class QueueManager:
         -------
             None
         """
-        if self.length < self.depth:
+        if len(self._queue) < self.depth:
             command_func = command_func if command_func is not None else self.command_func
             command_delay = delay if delay is not None else self.delay
             with self._lock:
@@ -290,16 +290,16 @@ class QueueManager:
 
     def clear(self):
         """ Clears the current queue """
-        if self.length > 0:
-            self._logger.info(f"Clearing queue with {self.length} items...")
+        if len(self._queue) > 0:
+            self._logger.info(f"Clearing queue with {len(self._queue)} items...")
             with self._lock:
                 self._queue = []
 
     def _queue_exec(self):
         """ Starts a background thread to process and send all queued commands """
-        if self.length > 0:
+        if len(self._queue) > 0:
             self._logger.debug('Exec queue thread starting...')
-        while self.length > 0:
+        while len(self._queue) > 0:
             with self._lock:
                 queue_temp = self._queue.pop(0)
             if queue_temp.expired:
@@ -371,9 +371,9 @@ class QueueManager:
 
     def _delay_queue_monitor(self):
         ''' Background thread to monitor the queue for threads with a delayed execution time. If there are tasks ready to run, start the queue thread '''
-        if self.length > 0:
+        if len(self._queue) > 0:
             self._logger.debug('Delay queue monitor thread starting...')
-        while self.length > 0:
+        while len(self._queue) > 0:
             # delay before checking
             sleep(self._delay_queue_check_interval)
 
