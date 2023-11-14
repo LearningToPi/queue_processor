@@ -62,7 +62,7 @@ from typing import TypeVar, Callable
 from parameter_verification import verify_params, ParameterError
 from logging_handler import create_logger, INFO, DEBUG
 
-VERSION = (1, 1, 0)    # updated 2023-11-09 14:28:24.523769 from : (1,0,0)
+VERSION = (1, 1, 1)    # updated 2023-11-13 22:55:47.725331 from : (1, 1, 0)
 
 # STATUS constants are returned to the finished callback
 STATUS_OK = 'OK'
