@@ -189,6 +189,7 @@ class QueueManager:
                           raise_queue_full=(raise_queue_full,bool))
         except ParameterError as param_err:
             self._logger.critical('Unable to initialize queue.  Parameter error: %s', param_err)
+            raise param_err
         self.name = name # Queue name for logging purposes
         self.depth = depth # configured max depth of the queue
         self.delay = delay_ms # default delay between executing commands
