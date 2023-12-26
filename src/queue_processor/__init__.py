@@ -62,7 +62,7 @@ from typing import TypeVar, Callable
 from parameter_verification import verify_params, ParameterError
 from logging_handler import create_logger, INFO, DEBUG
 
-VERSION = (1, 1, 1)    # updated 2023-11-13 22:55:47.725331 from : (1, 1, 0)
+VERSION = (1, 1, 2)    # updated 2023-11-25 22:52:09.889069 from : (1, 1, 1)
 
 # STATUS constants are returned to the finished callback
 STATUS_OK = 'OK'
@@ -302,6 +302,9 @@ class QueueManager:
             self._logger.debug('Exec queue thread starting...')
         while len(self._queue) > 0:
             with self._lock:
+                if len(self._queue) == 0:
+                    # catch the case where the queue is cleared after the loop enters but before we pop
+                    return
                 queue_temp = self._queue.pop(0)
             if queue_temp.expired:
                 self._logger.error(f"Queue item exired: {queue_temp}")

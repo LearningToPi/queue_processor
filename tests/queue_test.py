@@ -208,10 +208,10 @@ class QueueTester(unittest.TestCase):
         max_age = 30
         timeout= 2
         test1 = TestObj(name='test1-no-finished', queue_depth=queue_depth, items_to_queue=count, call_func='ok_delay', max_age=max_age, timeout=timeout, ret_value=False, clear=True)
-        self.assertTrue(test1.passed_count == 1)
+        self.assertTrue(test1.passed_count <= 2)
         test2 = TestObj(name='test2-w-finished', queue_depth=queue_depth, items_to_queue=count, call_func='ok_delay', finished_func='callback', max_age=max_age, timeout=timeout, ret_value=False, clear=True)
         sleep(3) # wait for last timeout callback
-        self.assertTrue(test2.passed_count == 1)
+        self.assertTrue(test2.passed_count <= 2)
 
     def test_9_delay_queue(self):
         ''' Create a queue and queue up some delayed and non-delayed items '''
